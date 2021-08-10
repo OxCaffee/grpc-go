@@ -558,11 +558,21 @@ func (s *Server) stopServerWorkers() {
 
 // NewServer creates a gRPC server which has no service registered and has not
 // started to accept requests yet.
+// 创建RPC服务器，传入的serverOption是一个接口，提供了apply方法
 func NewServer(opt ...ServerOption) *Server {
+	// serverOptions主要是RPC服务器的一些参数问题
+	// 例如服务器最大接收的消息尺寸，服务器最大发送消息尺寸
+	// 服务器读缓冲区的最大尺寸，服务器写缓冲区的最大尺寸
 	opts := defaultServerOptions
+
+	// 遍历所有的ServerOption接口
 	for _, o := range opt {
+		// 调用所有的ServerOption接口，调用接口的apply方法
+		// @TODO 跳转查看apply方法
+		// apply方法进行对服务器的参数配置，比如编码信息，证书校验信息，以及连接管理信息
 		o.apply(&opts)
 	}
+	// 创建Server实例s
 	s := &Server{
 		lis:      make(map[net.Listener]bool),
 		opts:     opts,
@@ -572,19 +582,26 @@ func NewServer(opt ...ServerOption) *Server {
 		done:     grpcsync.NewEvent(),
 		czData:   new(channelzData),
 	}
+
+	// 将所有的单个服务器拦截器串联成一个
 	chainUnaryServerInterceptors(s)
+	// 将所有的流服务器拦截器串联成一个
 	chainStreamServerInterceptors(s)
+	// 设置同步锁
 	s.cv = sync.NewCond(&s.mu)
 	if EnableTracing {
 		_, file, line, _ := runtime.Caller(1)
 		s.events = trace.NewEventLog("grpc.Server", fmt.Sprintf("%s:%d", file, line))
 	}
 
+	// @todo server worker到底是什么
 	if s.opts.numServerWorkers > 0 {
 		s.initServerWorkers()
 	}
 
+	// channel z是否开启了数据收集
 	if channelz.IsOn() {
+		// 将该Server注册到channel z中
 		s.channelzID = channelz.RegisterServer(&channelzServer{s}, "")
 	}
 	return s
@@ -618,45 +635,61 @@ type ServiceRegistrar interface {
 	RegisterService(desc *ServiceDesc, impl interface{})
 }
 
-// RegisterService registers a service and its implementation to the gRPC
-// server. It is called from the IDL generated code. This must be called before
-// invoking Serve. If ss is non-nil (for legacy code), its type is checked to
-// ensure it implements sd.HandlerType.
+// RegisterService 负责注册 service 和 service 的具体实现到grpc服务器中
+// 它由 IDL 接口定义语言产生的代码调用。 RegisterService 必须在 Serve 方法调用之前调用
+// 如果要注册的 service 不为nil，service 的类型将会被检查，来确保实现了 ServiceDesc.HandlerType
+// @param1: ServiceDesc 描述了 service 和它的方法以及处理器
+// @param2: impl 是即将传递给 method handler的 service 的具体实现
 func (s *Server) RegisterService(sd *ServiceDesc, ss interface{}) {
 	if ss != nil {
+		// 获得 ServiceDesc.HandlerType 类型
 		ht := reflect.TypeOf(sd.HandlerType).Elem()
+		// 获取service impl类型
 		st := reflect.TypeOf(ss)
+		// 检查 service impl是否实现了 ServiceDesc.HandlerType，如果没有，报错
+		// @todo 思考：为什么一定需要service实现HandlerType
+		// @todo 暂时答案：HandlerType是一个指向service的指针，用来检查service是否实现了方法
 		if !st.Implements(ht) {
 			logger.Fatalf("grpc: Server.RegisterService found the handler of type %v that does not satisfy %v", st, ht)
 		}
 	}
+	// 继续调用register方法
 	s.register(sd, ss)
 }
 
+// sd是描述的是具体service的method和handler，ss是要传递给service handler的service 的具体实现
 func (s *Server) register(sd *ServiceDesc, ss interface{}) {
+	// 加锁
 	s.mu.Lock()
+	// 最后解锁
 	defer s.mu.Unlock()
 	s.printf("RegisterService(%q)", sd.ServiceName)
+	// 注册一定发生在服务器启动之前，如果先启动再注册就会报错
 	if s.serve {
 		logger.Fatalf("grpc: Server.RegisterService after Server.Serve for %q", sd.ServiceName)
 	}
+	// 如果服务已经被注册，那么也会报错，不允许重复注册服务
 	if _, ok := s.services[sd.ServiceName]; ok {
 		logger.Fatalf("grpc: Server.RegisterService found duplicate service registration for %q", sd.ServiceName)
 	}
+	// 创建出要注册的服务的实例
 	info := &serviceInfo{
 		serviceImpl: ss,
 		methods:     make(map[string]*MethodDesc),
 		streams:     make(map[string]*StreamDesc),
 		mdata:       sd.Metadata,
 	}
+	// 依次获取要注册的服务的method
 	for i := range sd.Methods {
 		d := &sd.Methods[i]
 		info.methods[d.MethodName] = d
 	}
+	// 依次获取要注册的服务的流信息
 	for i := range sd.Streams {
 		d := &sd.Streams[i]
 		info.streams[d.StreamName] = d
 	}
+	// 将<serviceName, serviceInfo>存储在字典当中
 	s.services[sd.ServiceName] = info
 }
 

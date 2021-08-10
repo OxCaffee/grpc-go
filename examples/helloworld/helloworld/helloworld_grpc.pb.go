@@ -68,7 +68,9 @@ type UnsafeGreeterServer interface {
 	mustEmbedUnimplementedGreeterServer()
 }
 
+// s 是grpc server， srv是 service服务实例
 func RegisterGreeterServer(s grpc.ServiceRegistrar, srv GreeterServer) {
+	// 由 grpc 实施注册
 	s.RegisterService(&Greeter_ServiceDesc, srv)
 }
 
